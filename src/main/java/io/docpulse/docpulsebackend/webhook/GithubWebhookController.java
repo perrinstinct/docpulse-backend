@@ -1,29 +1,34 @@
 package io.docpulse.docpulsebackend.webhook;
 
+import io.docpulse.docpulsebackend.change.ChangeAnalyzerService;
+import io.docpulse.docpulsebackend.change.ChangeEvent;
+import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Map;
+import java.util.*;
 
 @RestController
 @RequestMapping("/webhooks/github")
+@Slf4j
 public class GithubWebhookController {
-
-    private static final Logger log = LoggerFactory.getLogger(GithubWebhookController.class);
 
     // TODO: move to config later
     private static final String EXPECTED_REPO = "docpulse-backend";
     private static final String MAIN_BRANCH_REF = "refs/heads/main";
 
+    private final ChangeAnalyzerService analyzerService;
+
+    public GithubWebhookController(ChangeAnalyzerService analyzerService) {
+        this.analyzerService = analyzerService;
+    }
+
     @PostMapping
     public ResponseEntity<Void> receiveWebhook(@RequestBody Map<String, Object> payload) {
 
         log.info("📦 GitHub webhook received");
-
-        // raw log (wanted for debugging purposes)
-        log.info("Payload = {}", payload);
 
         try {
             Map<String, Object> repository =
@@ -42,7 +47,27 @@ public class GithubWebhookController {
                 return ResponseEntity.ok().build();
             }
 
-            log.info("✅ Valid webhook received for repo={} branch=main", repoName);
+            List<Map<String, Object>> commits =
+                    (List<Map<String, Object>>) payload.get("commits");
+
+            if (commits == null || commits.isEmpty()) {
+                log.warn("No commits found in payload");
+                return ResponseEntity.ok().build();
+            }
+
+            Map<String, Object> lastCommit = commits.getLast();
+            String commitSha = (String) lastCommit.get("id");
+
+            List<String> filesChanged = new ArrayList<>();
+            filesChanged.addAll((List<String>) lastCommit.getOrDefault("added", List.of()));
+            filesChanged.addAll((List<String>) lastCommit.getOrDefault("modified", List.of()));
+            filesChanged.addAll((List<String>) lastCommit.getOrDefault("removed", List.of()));
+
+            ChangeEvent event = new ChangeEvent(commitSha, filesChanged);
+
+            log.info("🧠 ChangeEvent created: {}", event);
+
+            analyzerService.hasPotentialDocumentationImpact(event);
 
         } catch (Exception e) {
             log.error("❌ Invalid GitHub webhook payload", e);
